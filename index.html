@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Snake</title>
+
+  <!-- ===================== STYLES ===================== -->
+  <style>
+    /* ---------- Reset & base ---------- */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0a;
+      color: #e0e0e0;
+      font-family: 'Courier New', Courier, monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* ---------- Header ---------- */
+    h1 {
+      font-size: 0.7rem;
+      font-weight: 400;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: #555;
+      margin-bottom: 1rem;
+    }
+
+    /* ---------- Scoreboard ---------- */
+    #scoreboard {
+      font-size: 0.75rem;
+      letter-spacing: 0.12em;
+      color: #555;
+      margin-bottom: 1rem;
+    }
+
+    #scoreboard .val {
+      color: #e0e0e0;
+    }
+
+    #scoreboard .sep {
+      color: #333;
+      margin: 0 0.6em;
+    }
+
+    /* ---------- Canvas ---------- */
+    canvas {
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      background: #111;
+      display: block;
+    }
+
+    /* Wrapper keeps touch controls aligned */
+    #game-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ---------- Mobile touch controls ---------- */
+    #touch-controls {
+      display: none;
+      margin-top: 1.2rem;
+      width: 180px;
+      height: 180px;
+      position: relative;
+    }
+
+    .touch-btn {
+      position: absolute;
+      width: 56px;
+      height: 56px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      background: transparent;
+      color: #555;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 1.4rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.1s, color 0.1s;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .touch-btn:active {
+      background: #1a1a1a;
+      color: #e0e0e0;
+    }
+
+    /* D-pad positioning */
+    #btn-up    { top: 0;    left: 50%; transform: translateX(-50%); }
+    #btn-down  { bottom: 0; left: 50%; transform: translateX(-50%); }
+    #btn-left  { top: 50%;  left: 0;   transform: translateY(-50%); }
+    #btn-right { top: 50%;  right: 0;  transform: translateY(-50%); }
+
+    /* Show touch controls on touch devices */
+    @media (pointer: coarse) {
+      #touch-controls { display: block; }
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Snake</h1>
+
+  <!-- Score display -->
+  <div id="scoreboard">
+    SCORE <span class="val" id="score">0</span>
+    <span class="sep">&middot;</span>
+    HI <span class="val" id="hi-score">0</span>
+  </div>
+
+  <!-- Canvas -->
+  <div id="game-wrapper">
+    <canvas id="board"></canvas>
+  </div>
+
+  <!-- On-screen d-pad for touch devices -->
+  <div id="touch-controls">
+    <button class="touch-btn" id="btn-up"    aria-label="Up">&#9650;</button>
+    <button class="touch-btn" id="btn-down"  aria-label="Down">&#9660;</button>
+    <button class="touch-btn" id="btn-left"  aria-label="Left">&#9664;</button>
+    <button class="touch-btn" id="btn-right" aria-label="Right">&#9654;</button>
+  </div>
+
+  <!-- ===================== GAME LOGIC ===================== -->
+  <script>
+    // ============================================================
+    //  CONSTANTS & CONFIGURATION
+    // ============================================================
+
+    const GRID         = 20;        // cells per axis
+    const LOGICAL_SIZE = 400;       // CSS pixels for the canvas
+    const CELL         = LOGICAL_SIZE / GRID;
+
+    // Timing
+    const BASE_TICK    = 130;       // ms per tick at score 0
+    const MIN_TICK     = 60;        // fastest possible tick
+    const SPEED_DROP   = 2;         // ms faster per food eaten
+
+    // Colors
+    const C_BG         = '#111111';
+    const C_PRIMARY    = '#e0e0e0';
+    const C_SECONDARY  = '#555555';
+    const C_ACCENT     = '#00ff88';
+    const C_GRID       = 'rgba(255,255,255,0.04)';
+    const C_OVERLAY    = 'rgba(10,10,10,0.92)';
+
+    // Particles
+    const PARTICLE_COUNT   = 6;
+    const PARTICLE_LIFE    = 350;   // ms
+    const PARTICLE_SPEED   = [40, 80]; // px/sec range
+
+    // ============================================================
+    //  STATE
+    // ============================================================
+
+    let state       = 'start';      // 'start' | 'playing' | 'paused' | 'dead'
+    let snake       = [];
+    let prevSnake   = [];           // previous positions for interpolation
+    let direction   = 'right';
+    let nextDir     = 'right';
+    let food        = { x: 0, y: 0 };
+    let score       = 0;
+    let hiScore     = parseInt(localStorage.getItem('snake_hi')) || 0;
+    let particles   = [];
+    let hintAlpha   = 1.0;         // keyboard hint opacity (fades after first input)
+    let firstInput  = false;       // has the player pressed a direction key yet?
+    let deathFlash  = 0;           // remaining ms for death screen flash
+    let overlayAlpha = 1.0;        // for fade transitions on overlays
+
+    // Timing state for the rAF loop
+    let lastTime       = 0;
+    let tickAccumulator = 0;
+    let rafId           = 0;
+
+    // ============================================================
+    //  CANVAS SETUP (Hi-DPI)
+    // ============================================================
+
+    const canvas = document.getElementById('board');
+    const ctx    = canvas.getContext('2d');
+
+    /** Scale the canvas for crisp rendering on retina displays */
+    function setupCanvas() {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width  = LOGICAL_SIZE * dpr;
+      canvas.height = LOGICAL_SIZE * dpr;
+      canvas.style.width  = LOGICAL_SIZE + 'px';
+      canvas.style.height = LOGICAL_SIZE + 'px';
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.scale(dpr, dpr);
+    }
+
+    setupCanvas();
+
+    // DOM references
+    const scoreEl   = document.getElementById('score');
+    const hiScoreEl = document.getElementById('hi-score');
+
+    hiScoreEl.textContent = hiScore;
+
+    // ============================================================
+    //  GAME STATE MACHINE
+    // ============================================================
+
+    /** Transition to the 'playing' state and reset the game */
+    function startGame() {
+      snake = [
+        { x: 5, y: 10 },
+        { x: 4, y: 10 },
+        { x: 3, y: 10 }
+      ];
+      prevSnake   = snake.map(s => ({ ...s }));
+      direction   = 'right';
+      nextDir     = 'right';
+      score       = 0;
+      particles   = [];
+      deathFlash  = 0;
+      hintAlpha   = 1.0;
+      firstInput  = false;
+      tickAccumulator = 0;
+
+      scoreEl.textContent = score;
+      placeFood();
+      state = 'playing';
+    }
+
+    /** Toggle pause on/off */
+    function togglePause() {
+      if (state === 'playing') {
+        state = 'paused';
+      } else if (state === 'paused') {
+        state = 'playing';
+        tickAccumulator = 0;       // prevent a burst of ticks after unpausing
+      }
+    }
+
+    /** Transition to the 'dead' state */
+    function die() {
+      state = 'dead';
+      deathFlash = 250;
+      if (score > hiScore) {
+        hiScore = score;
+        localStorage.setItem('snake_hi', hiScore);
+        hiScoreEl.textContent = hiScore;
+      }
+    }
+
+    // ============================================================
+    //  GAME LOGIC
+    // ============================================================
+
+    /** Current tick interval in ms, decreasing with score */
+    function tickInterval() {
+      return Math.max(BASE_TICK - score * SPEED_DROP, MIN_TICK);
+    }
+
+    /** Place food at a random cell not occupied by the snake */
+    function placeFood() {
+      let pos;
+      do {
+        pos = {
+          x: Math.floor(Math.random() * GRID),
+          y: Math.floor(Math.random() * GRID)
+        };
+      } while (snake.some(s => s.x === pos.x && s.y === pos.y));
+      food = pos;
+    }
+
+    /** Advance the game by one logical step */
+    function tick() {
+      // Save previous positions for smooth interpolation
+      prevSnake = snake.map(s => ({ ...s }));
+
+      // Apply buffered direction
+      direction = nextDir;
+
+      // Compute new head position
+      const head = { ...snake[0] };
+      if (direction === 'up')    head.y -= 1;
+      if (direction === 'down')  head.y += 1;
+      if (direction === 'left')  head.x -= 1;
+      if (direction === 'right') head.x += 1;
+
+      // Wall collision
+      if (head.x < 0 || head.x >= GRID || head.y < 0 || head.y >= GRID) {
+        return die();
+      }
+      // Self collision
+      if (snake.some(s => s.x === head.x && s.y === head.y)) {
+        return die();
+      }
+
+      snake.unshift(head);
+
+      // Food check
+      if (head.x === food.x && head.y === food.y) {
+        score += 1;
+        scoreEl.textContent = score;
+        spawnParticles(food.x, food.y);
+        placeFood();
+        // Grow: set prev position for new tail segment to avoid lerp jump
+        prevSnake.push({ ...prevSnake[prevSnake.length - 1] });
+      } else {
+        snake.pop();
+      }
+    }
+
+    // ============================================================
+    //  PARTICLES & EFFECTS
+    // ============================================================
+
+    /** Spawn eat-effect particles at a grid position */
+    function spawnParticles(gx, gy) {
+      const cx = gx * CELL + CELL / 2;
+      const cy = gy * CELL + CELL / 2;
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = PARTICLE_SPEED[0] + Math.random() * (PARTICLE_SPEED[1] - PARTICLE_SPEED[0]);
+        particles.push({
+          x: cx, y: cy,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life: PARTICLE_LIFE,
+          maxLife: PARTICLE_LIFE
+        });
+      }
+    }
+
+    /** Update particles by delta ms, remove dead ones */
+    function updateParticles(delta) {
+      const dt = delta / 1000; // seconds
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= delta;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    /** Draw all live particles */
+    function drawParticles() {
+      for (const p of particles) {
+        const alpha = (p.life / p.maxLife) * 0.6;
+        ctx.fillStyle = `rgba(0,255,136,${alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // ============================================================
+    //  RENDERING
+    // ============================================================
+
+    /** Linear interpolation helper */
+    function lerp(a, b, t) { return a + (b - a) * t; }
+
+    /** Draw faint grid dots at each cell intersection */
+    function drawGrid() {
+      ctx.fillStyle = C_GRID;
+      for (let x = 0; x <= GRID; x++) {
+        for (let y = 0; y <= GRID; y++) {
+          ctx.fillRect(x * CELL - 0.5, y * CELL - 0.5, 1, 1);
+        }
+      }
+    }
+
+    /** Draw the snake with interpolation and body gradient */
+    function drawSnake(t) {
+      const len = snake.length;
+      for (let i = len - 1; i >= 0; i--) {
+        // Interpolate between previous and current position
+        const px = lerp(prevSnake[i].x, snake[i].x, t) * CELL;
+        const py = lerp(prevSnake[i].y, snake[i].y, t) * CELL;
+
+        if (i === 0) {
+          // Head — accent green
+          ctx.fillStyle = C_ACCENT;
+        } else {
+          // Body — gradient from bright to dim, head-to-tail
+          const ratio = i / (len - 1 || 1);
+          const gray = Math.round(170 - ratio * 137); // #aa (170) → #21 (33)
+          ctx.fillStyle = `rgb(${gray},${gray},${gray})`;
+        }
+
+        // Rounded rectangle segment
+        const inset = 0.5;
+        const size  = CELL - inset * 2;
+        const r     = 3; // corner radius
+        roundRect(ctx, px + inset, py + inset, size, size, r);
+        ctx.fill();
+      }
+    }
+
+    /** Draw a rounded rectangle path (fills, does not stroke) */
+    function roundRect(c, x, y, w, h, r) {
+      c.beginPath();
+      c.moveTo(x + r, y);
+      c.lineTo(x + w - r, y);
+      c.arcTo(x + w, y, x + w, y + r, r);
+      c.lineTo(x + w, y + h - r);
+      c.arcTo(x + w, y + h, x + w - r, y + h, r);
+      c.lineTo(x + r, y + h);
+      c.arcTo(x, y + h, x, y + h - r, r);
+      c.lineTo(x, y + r);
+      c.arcTo(x, y, x + r, y, r);
+      c.closePath();
+    }
+
+    /** Draw the food with a subtle pulse and glow */
+    function drawFood(timestamp) {
+      const cx = food.x * CELL + CELL / 2;
+      const cy = food.y * CELL + CELL / 2;
+      const pulse = Math.sin(timestamp * 0.004) * 0.5 + 0.5; // 0..1
+
+      // Glow halo
+      ctx.fillStyle = 'rgba(0,255,136,0.08)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, CELL / 2 + 2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Main food circle
+      const radius = (CELL / 2 - 3) + pulse * 2;
+      ctx.fillStyle = C_ACCENT;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    /** Draw the death flash overlay (fades out over 250ms) */
+    function drawDeathFlash() {
+      if (deathFlash <= 0) return;
+      const alpha = (deathFlash / 250) * 0.12;
+      ctx.fillStyle = `rgba(0,255,136,${alpha})`;
+      ctx.fillRect(0, 0, LOGICAL_SIZE, LOGICAL_SIZE);
+    }
+
+    /** Draw centered monospace text on the canvas */
+    function drawText(text, y, size, color, spacing) {
+      ctx.fillStyle = color;
+      ctx.font = `${size}px 'Courier New', Courier, monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      if (spacing) ctx.letterSpacing = spacing;
+      ctx.fillText(text, LOGICAL_SIZE / 2, y);
+      if (spacing) ctx.letterSpacing = '0px';
+    }
+
+    // ============================================================
+    //  SCREEN RENDERERS (one per game state)
+    // ============================================================
+
+    /** Start screen: title + blinking prompt */
+    function drawStartScreen(timestamp) {
+      // Clear
+      ctx.fillStyle = C_BG;
+      ctx.fillRect(0, 0, LOGICAL_SIZE, LOGICAL_SIZE);
+      drawGrid();
+
+      // Title
+      drawText('SNAKE', LOGICAL_SIZE / 2 - 20, 18, C_PRIMARY, '8px');
+
+      // Blinking prompt
+      const blink = Math.sin(timestamp * 0.003) * 0.3 + 0.7; // 0.4..1.0
+      const isTouch = matchMedia('(pointer: coarse)').matches;
+      const prompt = isTouch ? 'TAP TO START' : 'PRESS ANY KEY';
+      ctx.globalAlpha = blink;
+      drawText(prompt, LOGICAL_SIZE / 2 + 20, 10, C_SECONDARY);
+      ctx.globalAlpha = 1.0;
+    }
+
+    /** Playing screen: grid, snake, food, particles, hint */
+    function drawPlayingScreen(timestamp, t) {
+      // Clear
+      ctx.fillStyle = C_BG;
+      ctx.fillRect(0, 0, LOGICAL_SIZE, LOGICAL_SIZE);
+      drawGrid();
+
+      drawFood(timestamp);
+      drawSnake(t);
+      drawParticles();
+      drawDeathFlash();
+
+      // Input hint (fades after first directional input)
+      if (hintAlpha > 0.01) {
+        ctx.globalAlpha = hintAlpha;
+        const isTouch = matchMedia('(pointer: coarse)').matches;
+        const hint = isTouch ? 'SWIPE OR D-PAD' : 'WASD / ARROWS';
+        drawText(hint, LOGICAL_SIZE - 16, 9, C_SECONDARY);
+        ctx.globalAlpha = 1.0;
+      }
+    }
+
+    /** Pause overlay: dim the game + centered text */
+    function drawPauseScreen(timestamp, t) {
+      // Draw the game underneath at reduced opacity
+      drawPlayingScreen(timestamp, t);
+
+      ctx.fillStyle = C_OVERLAY;
+      ctx.fillRect(0, 0, LOGICAL_SIZE, LOGICAL_SIZE);
+
+      drawText('PAUSED', LOGICAL_SIZE / 2, 14, C_PRIMARY, '6px');
+    }
+
+    /** Game-over overlay: score, high score, restart prompt */
+    function drawDeadScreen(timestamp, t) {
+      // Draw the frozen game underneath
+      drawPlayingScreen(timestamp, t);
+
+      ctx.fillStyle = C_OVERLAY;
+      ctx.fillRect(0, 0, LOGICAL_SIZE, LOGICAL_SIZE);
+
+      drawText('GAME OVER', LOGICAL_SIZE / 2 - 40, 16, C_PRIMARY, '5px');
+      drawText('SCORE  ' + score, LOGICAL_SIZE / 2 - 8, 11, C_SECONDARY);
+
+      if (score >= hiScore && score > 0) {
+        drawText('NEW BEST', LOGICAL_SIZE / 2 + 16, 10, C_ACCENT);
+      } else {
+        drawText('BEST  ' + hiScore, LOGICAL_SIZE / 2 + 16, 10, C_SECONDARY);
+      }
+
+      // Blinking restart prompt
+      const blink = Math.sin(timestamp * 0.003) * 0.3 + 0.7;
+      const isTouch = matchMedia('(pointer: coarse)').matches;
+      const prompt = isTouch ? 'TAP TO RESTART' : 'PRESS ANY KEY';
+      ctx.globalAlpha = blink;
+      drawText(prompt, LOGICAL_SIZE / 2 + 50, 10, C_SECONDARY);
+      ctx.globalAlpha = 1.0;
+    }
+
+    // ============================================================
+    //  MAIN LOOP (requestAnimationFrame)
+    // ============================================================
+
+    function gameLoop(timestamp) {
+      if (lastTime === 0) lastTime = timestamp;
+      const delta = Math.min(timestamp - lastTime, 100); // cap to avoid spiral
+      lastTime = timestamp;
+
+      // Advance game logic when playing
+      if (state === 'playing') {
+        tickAccumulator += delta;
+        const interval = tickInterval();
+        while (tickAccumulator >= interval && state === 'playing') {
+          tick();
+          tickAccumulator -= interval;
+        }
+      }
+
+      // Update effects regardless of state
+      updateParticles(delta);
+      if (deathFlash > 0) deathFlash -= delta;
+
+      // Fade the input hint after first directional input
+      if (firstInput && hintAlpha > 0) {
+        hintAlpha = Math.max(0, hintAlpha - delta / 1000);
+      }
+
+      // Interpolation factor for smooth rendering (0..1 progress toward next tick)
+      const t = (state === 'playing') ? tickAccumulator / tickInterval() : 1;
+
+      // Render the appropriate screen
+      switch (state) {
+        case 'start':  drawStartScreen(timestamp); break;
+        case 'playing': drawPlayingScreen(timestamp, t); break;
+        case 'paused': drawPauseScreen(timestamp, t); break;
+        case 'dead':   drawDeadScreen(timestamp, t); break;
+      }
+
+      rafId = requestAnimationFrame(gameLoop);
+    }
+
+    // ============================================================
+    //  INPUT — Keyboard
+    // ============================================================
+
+    /** Buffer a direction change, preventing 180° reversal */
+    function setDirection(dir) {
+      const opposites = { up: 'down', down: 'up', left: 'right', right: 'left' };
+      if (dir === opposites[direction]) return;
+      nextDir = dir;
+      if (!firstInput) firstInput = true;
+    }
+
+    document.addEventListener('keydown', e => {
+      const dirMap = {
+        ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+        w: 'up', s: 'down', a: 'left', d: 'right'
+      };
+
+      // Start screen: any key starts
+      if (state === 'start') {
+        e.preventDefault();
+        startGame();
+        return;
+      }
+
+      // Dead screen: any key goes back to start
+      if (state === 'dead') {
+        e.preventDefault();
+        state = 'start';
+        return;
+      }
+
+      // Pause toggle
+      if (e.key === ' ' || e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
+        e.preventDefault();
+        togglePause();
+        return;
+      }
+
+      // Direction input (only while playing or paused — resume on input if paused)
+      if (dirMap[e.key]) {
+        e.preventDefault();
+        if (state === 'paused') {
+          state = 'playing';
+          tickAccumulator = 0;
+        }
+        setDirection(dirMap[e.key]);
+      }
+    });
+
+    // ============================================================
+    //  INPUT — Touch d-pad buttons
+    // ============================================================
+
+    function handleDpadPress(dir) {
+      if (state === 'start') { startGame(); return; }
+      if (state === 'dead') { state = 'start'; return; }
+      if (state === 'paused') { state = 'playing'; tickAccumulator = 0; }
+      setDirection(dir);
+    }
+
+    document.getElementById('btn-up').addEventListener('click',    () => handleDpadPress('up'));
+    document.getElementById('btn-down').addEventListener('click',  () => handleDpadPress('down'));
+    document.getElementById('btn-left').addEventListener('click',  () => handleDpadPress('left'));
+    document.getElementById('btn-right').addEventListener('click', () => handleDpadPress('right'));
+
+    // ============================================================
+    //  INPUT — Swipe gestures on canvas
+    // ============================================================
+
+    let touchStartX = 0;
+    let touchStartY = 0;
+
+    canvas.addEventListener('touchstart', e => {
+      // Two-finger tap toggles pause
+      if (e.touches.length === 2 && (state === 'playing' || state === 'paused')) {
+        e.preventDefault();
+        togglePause();
+        return;
+      }
+      const touch = e.touches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', e => {
+      if (e.changedTouches.length === 0) return;
+      const touch = e.changedTouches[0];
+      const dx = touch.clientX - touchStartX;
+      const dy = touch.clientY - touchStartY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      // Tap (not a swipe) — used for start/restart
+      if (dist < 15) {
+        if (state === 'start') { startGame(); return; }
+        if (state === 'dead') { state = 'start'; return; }
+        return;
+      }
+
+      // Swipe — must exceed threshold
+      if (dist < 30) return;
+
+      if (state === 'start') { startGame(); return; }
+      if (state === 'dead') { state = 'start'; return; }
+      if (state === 'paused') { state = 'playing'; tickAccumulator = 0; }
+
+      if (Math.abs(dx) > Math.abs(dy)) {
+        setDirection(dx > 0 ? 'right' : 'left');
+      } else {
+        setDirection(dy > 0 ? 'down' : 'up');
+      }
+    });
+
+    // Prevent canvas touch from scrolling the page
+    canvas.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+
+    // ============================================================
+    //  INIT — Start the loop in 'start' state
+    // ============================================================
+
+    // Pre-place a snake for the start screen (not visible, but needed for state)
+    snake = [
+      { x: 5, y: 10 },
+      { x: 4, y: 10 },
+      { x: 3, y: 10 }
+    ];
+    prevSnake = snake.map(s => ({ ...s }));
+    placeFood();
+
+    rafId = requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
